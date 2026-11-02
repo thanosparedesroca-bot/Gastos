@@ -92,6 +92,8 @@ td.neg{color:var(--bad)}
 #toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);background:#0b2a4a;color:#fff;border:1px solid var(--acc);padding:10px 16px;border-radius:12px;opacity:0;pointer-events:none;transition:opacity .25s;z-index:60;max-width:90%;text-align:center}
 #toast.show{opacity:1}
 .empty{color:var(--mut);padding:8px 0}
+.edrow{display:grid;grid-template-columns:1fr 92px 38px;gap:6px;margin:6px 0}.edrow input{padding:8px}
+.edrow button{background:none;border:1px solid var(--line);border-radius:10px;color:var(--bad);font-size:1rem}
 @media(max-width:520px){.wrap{padding:8px}.card{padding:12px 8px}}
 #dlg{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:100}
 #dlg.on{display:flex}
@@ -319,7 +321,7 @@ function renderBudPrev(){
   $('#pbMonth').onchange=e=>{if(e.target.value){PB.month=e.target.value;renderBudPrev();}};
   $('#pbOk').onclick=applyBudget;$('#pbNo').onclick=()=>{PB=null;renderBudPrev();};
 }
-function applyBudget(){
+function applyBudget(){editB=false;draft=null;
   if(!PB||!PB.cats.length)return;
   S.budgets[PB.month]={cats:PB.cats.map(c=>({name:c.name,amount:c.amount})),total:r2(PB.cats.reduce((s,c)=>s+c.amount,0))};
   S.selMonth=PB.month;persist();
@@ -461,7 +463,7 @@ async function applyDaily(){
   const cats=dayCats(PD);if(!cats.length){toast('No hay nada que guardar');return;}
   if(S.records.some(r=>r.date===PD.date)&&!(await ask('Ya hay registros con esa fecha. ¿Agregar de todos modos?')))return;
   const rec={id:uid(),date:PD.date,total:r2(cats.reduce((s,c)=>s+c.amount,0)),cats};
-  S.records.push(rec);S.selMonth=rec.date.slice(0,7);persist();
+  S.records.push(rec);S.selMonth=rec.date.slice(0,7);editB=false;draft=null;persist();
   PD=null;$('#dayTxt').value='';renderDayPrev();renderAll();toast('Gasto agregado ✔');
 }
 
@@ -504,6 +506,34 @@ function renderBanner(){
   box.innerHTML=h?'<div class="banner"><button id="bnX" aria-label="Cerrar">✕</button>'+h+'</div>':'';
   if(h)$('#bnX').onclick=()=>{bannerOff=true;renderBanner();};
 }
+let editB=false,draft=null;
+function renderBudActions(){
+  const mk=S.selMonth,b=S.budgets[mk],box=$('#tbl');
+  if(!b)return;
+  if(editB&&draft){
+    let h='<div class="mut" style="font-size:.85rem;margin-bottom:6px">Editando presupuesto de '+monthLabel(mk)+'</div>';
+    draft.forEach((c,i)=>{h+='<div class="edrow"><input data-i="'+i+'" data-f="n" value="'+esc(c.name)+'" placeholder="Categoría"><input data-i="'+i+'" data-f="a" type="number" inputmode="decimal" step="any" value="'+c.amount+'"><button data-x="'+i+'" title="Quitar">✕</button></div>';});
+    h+='<div class="row"><button class="btn sec" id="edAdd">➕ Agregar categoría</button></div><div class="row"><button class="btn" id="edOk">✔ Guardar cambios</button><button class="btn sec" id="edNo">Cancelar</button></div>';
+    box.innerHTML=h;
+    box.querySelectorAll('input[data-f]').forEach(inp=>{inp.oninput=()=>{const c=draft[+inp.dataset.i];if(inp.dataset.f==='n')c.name=inp.value;else c.amount=parseFloat(inp.value)||0;};});
+    box.querySelectorAll('[data-x]').forEach(bt=>{bt.onclick=()=>{draft.splice(+bt.dataset.x,1);renderBudActions();};});
+    $('#edAdd').onclick=()=>{draft.push({name:'',amount:0,o:null});renderBudActions();};
+    $('#edOk').onclick=saveBudgetEdit;
+    $('#edNo').onclick=()=>{editB=false;draft=null;renderMain();};
+    return;
+  }
+  box.insertAdjacentHTML('beforeend','<div class="row"><button class="btn sec" id="bEdit">✏️ Editar presupuesto</button><button class="btn red" id="bDel">🗑 Eliminar presupuesto del mes</button></div>');
+  $('#bEdit').onclick=()=>{editB=true;draft=b.cats.map(c=>({name:c.name,amount:c.amount,o:c.name}));renderMain();};
+  $('#bDel').onclick=async()=>{if(await ask('¿Eliminar el presupuesto de '+monthLabel(mk)+'? Los gastos registrados se mantienen.')){delete S.budgets[mk];persist();renderAll();toast('Presupuesto eliminado');}};
+}
+function saveBudgetEdit(){
+  const mk=S.selMonth,out=[],seen={};
+  draft.forEach(c=>{const nm=cap(c.name||'');if(!nm)return;const k=norm(nm);if(seen[k]){seen[k].amount=r2(seen[k].amount+c.amount);return;}const o={name:nm,amount:r2(c.amount),o:c.o};seen[k]=o;out.push(o);});
+  if(!out.length){toast('Deja al menos una categoría, o usa «Eliminar presupuesto del mes»');return;}
+  out.forEach(c=>{if(c.o&&norm(c.o)!==norm(c.name)){S.records.forEach(r=>{if(r.date.slice(0,7)===mk)r.cats.forEach(x=>{if(norm(x.name)===norm(c.o))x.name=c.name;});});}});
+  S.budgets[mk]={cats:out.map(c=>({name:c.name,amount:c.amount})),total:r2(out.reduce((s,c)=>s+c.amount,0))};
+  editB=false;draft=null;persist();renderAll();toast('Presupuesto actualizado ✔');
+}
 function renderMain(){
   const mk=S.selMonth,rows=monthRows(mk);
   const tb=r2(rows.reduce((s,r)=>s+r.bud,0)),ts=r2(rows.reduce((s,r)=>s+r.sp,0)),tr=r2(tb-ts);
@@ -516,6 +546,7 @@ function renderMain(){
     h+='</tbody><tfoot><tr class="tot"><td></td><td>TOTAL</td><td>'+fmt(tb)+'</td><td>'+fmt(ts)+'</td><td'+(tr<0?' class="neg"':'')+'>'+fmt(tr)+'</td><td>'+pctTxt(tp)+'</td></tr></tfoot></table>';
     $('#tbl').innerHTML=h;
   }
+  renderBudActions();
   const n=notesFor(rows);let h='';
   if(n.done.length){h+='<b>Categorías completadas (100%)</b>';n.done.forEach(x=>{h+='<div class="note '+x.c+'">'+esc(x.t)+'</div>';});}
   if(n.near.length){h+='<div style="margin-top:8px"><b>Cerca del límite (≥ 85%)</b></div>';n.near.forEach(x=>{h+='<div class="note '+x.c+'">'+esc(x.t)+'</div>';});}
@@ -633,11 +664,11 @@ function importJSON(file){
 }
 
 /* ---------- eventos ---------- */
-function shiftMonth(d){const p=S.selMonth.split('-').map(Number),dt=new Date(p[0],p[1]-1+d,1);S.selMonth=mkey(dt);store();renderAll();}
+function shiftMonth(d){editB=false;draft=null;const p=S.selMonth.split('-').map(Number),dt=new Date(p[0],p[1]-1+d,1);S.selMonth=mkey(dt);store();renderAll();}
 function bind(){
   $('#theme').onclick=()=>{S.theme=S.theme==='dark'?'light':'dark';applyTheme();store();renderReport();};
   $('#prev').onclick=()=>shiftMonth(-1);$('#next').onclick=()=>shiftMonth(1);
-  $('#mes').onchange=e=>{if(e.target.value){S.selMonth=e.target.value;store();renderAll();}};
+  $('#mes').onchange=e=>{if(e.target.value){editB=false;draft=null;S.selMonth=e.target.value;store();renderAll();}};
   $('#budBtn').onclick=()=>{const t=$('#budTxt').value;if(!t.trim()){toast('Pega primero el presupuesto');return;}const R=parseBudget(t);if(!R.cats.length){toast('No detecté categorías con monto');return;}PB=R;renderBudPrev();};
   $('#budClr').onclick=()=>{$('#budTxt').value='';PB=null;renderBudPrev();};
   $('#dayBtn').onclick=()=>{const t=$('#dayTxt').value;if(!t.trim()){toast('Pega primero los gastos');return;}const P=buildDailyPreview(t);if(P){PD=P;renderDayPrev();}};
