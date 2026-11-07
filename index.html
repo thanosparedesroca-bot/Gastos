@@ -92,6 +92,7 @@ td.neg{color:var(--bad)}
 #toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);background:#0b2a4a;color:#fff;border:1px solid var(--acc);padding:10px 16px;border-radius:12px;opacity:0;pointer-events:none;transition:opacity .25s;z-index:60;max-width:90%;text-align:center}
 #toast.show{opacity:1}
 .empty{color:var(--mut);padding:8px 0}
+.cloudbox{background:var(--card2);border:1px solid var(--line);border-radius:14px;padding:10px 12px;font-size:.85rem;margin-bottom:10px}.cloudbox .row{margin-top:8px}.cloudbox .btn{padding:7px 10px;font-size:.82rem}
 .edrow{display:grid;grid-template-columns:1fr 92px 38px;gap:6px;margin:6px 0}.edrow input{padding:8px}
 .edrow button{background:none;border:1px solid var(--line);border-radius:10px;color:var(--bad);font-size:1rem}
 @media(max-width:520px){.wrap{padding:8px}.card{padding:12px 8px}}
@@ -113,6 +114,7 @@ html{scroll-padding-top:env(safe-area-inset-top,0px)}
   <div class="mrow"><button class="ic" id="prev">‹</button><input type="month" id="mes" aria-label="Mes"><button class="ic" id="next">›</button></div>
 
   <div id="seal" data-dyn></div>
+  <div id="cloud" data-dyn></div>
   <div id="banner" data-dyn></div>
   <div class="cards3" id="cards" data-dyn></div>
 
@@ -167,6 +169,9 @@ html{scroll-padding-top:env(safe-area-inset-top,0px)}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" crossorigin="anonymous"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" crossorigin="anonymous"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js" crossorigin="anonymous"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js" crossorigin="anonymous"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js" crossorigin="anonymous"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js" crossorigin="anonymous"></script>
 <script>
 (function(){
 'use strict';
@@ -220,7 +225,7 @@ function sim(a,b){
 }
 
 /* ---------- estado y persistencia ---------- */
-function newState(){return {v:1,theme:'dark',budgets:{},records:[],selMonth:mkey(new Date()),savedAt:0,updatedAt:0};}
+function newState(){return {v:1,theme:'dark',budgets:{},records:[],selMonth:mkey(new Date()),savedAt:0,updatedAt:0,del:{},bdel:{}};}
 function b64e(s){return btoa(unescape(encodeURIComponent(s)));}
 function b64d(s){return decodeURIComponent(escape(atob(s)));}
 const isDirty=()=>(S.updatedAt||0)>(S.savedAt||0);
@@ -229,7 +234,7 @@ function store(){
   try{if(lsOK)localStorage.setItem(KEY,j);}catch(e){}
   try{history.replaceState(null,'','#d='+b64e(j));}catch(e){}
 }
-function persist(){S.updatedAt=Date.now();store();renderSeal();}
+function persist(){S.updatedAt=Date.now();store();renderSeal();schedulePush();}
 function validState(s){return s&&typeof s==='object'&&Array.isArray(s.records)&&s.budgets&&typeof s.budgets==='object';}
 function loadState(){
   const c=[];
@@ -323,7 +328,7 @@ function renderBudPrev(){
 }
 function applyBudget(){editB=false;draft=null;
   if(!PB||!PB.cats.length)return;
-  S.budgets[PB.month]={cats:PB.cats.map(c=>({name:c.name,amount:c.amount})),total:r2(PB.cats.reduce((s,c)=>s+c.amount,0))};
+  S.budgets[PB.month]={cats:PB.cats.map(c=>({name:c.name,amount:c.amount})),total:r2(PB.cats.reduce((s,c)=>s+c.amount,0)),u:Date.now()};
   S.selMonth=PB.month;persist();
   PB=null;$('#budTxt').value='';renderBudPrev();renderAll();toast('Presupuesto guardado ✔');
 }
@@ -462,7 +467,7 @@ async function applyDaily(){
   if(!PD)return;
   const cats=dayCats(PD);if(!cats.length){toast('No hay nada que guardar');return;}
   if(S.records.some(r=>r.date===PD.date)&&!(await ask('Ya hay registros con esa fecha. ¿Agregar de todos modos?')))return;
-  const rec={id:uid(),date:PD.date,total:r2(cats.reduce((s,c)=>s+c.amount,0)),cats};
+  const rec={id:uid(),date:PD.date,total:r2(cats.reduce((s,c)=>s+c.amount,0)),cats,u:Date.now()};
   S.records.push(rec);S.selMonth=rec.date.slice(0,7);editB=false;draft=null;persist();
   PD=null;$('#dayTxt').value='';renderDayPrev();renderAll();toast('Gasto agregado ✔');
 }
@@ -524,14 +529,14 @@ function renderBudActions(){
   }
   box.insertAdjacentHTML('beforeend','<div class="row"><button class="btn sec" id="bEdit">✏️ Editar presupuesto</button><button class="btn red" id="bDel">🗑 Eliminar presupuesto del mes</button></div>');
   $('#bEdit').onclick=()=>{editB=true;draft=b.cats.map(c=>({name:c.name,amount:c.amount,o:c.name}));renderMain();};
-  $('#bDel').onclick=async()=>{if(await ask('¿Eliminar el presupuesto de '+monthLabel(mk)+'? Los gastos registrados se mantienen.')){delete S.budgets[mk];persist();renderAll();toast('Presupuesto eliminado');}};
+  $('#bDel').onclick=async()=>{if(await ask('¿Eliminar el presupuesto de '+monthLabel(mk)+'? Los gastos registrados se mantienen.')){delete S.budgets[mk];S.bdel[mk]=Date.now();persist();renderAll();toast('Presupuesto eliminado');}};
 }
 function saveBudgetEdit(){
   const mk=S.selMonth,out=[],seen={};
   draft.forEach(c=>{const nm=cap(c.name||'');if(!nm)return;const k=norm(nm);if(seen[k]){seen[k].amount=r2(seen[k].amount+c.amount);return;}const o={name:nm,amount:r2(c.amount),o:c.o};seen[k]=o;out.push(o);});
   if(!out.length){toast('Deja al menos una categoría, o usa «Eliminar presupuesto del mes»');return;}
-  out.forEach(c=>{if(c.o&&norm(c.o)!==norm(c.name)){S.records.forEach(r=>{if(r.date.slice(0,7)===mk)r.cats.forEach(x=>{if(norm(x.name)===norm(c.o))x.name=c.name;});});}});
-  S.budgets[mk]={cats:out.map(c=>({name:c.name,amount:c.amount})),total:r2(out.reduce((s,c)=>s+c.amount,0))};
+  out.forEach(c=>{if(c.o&&norm(c.o)!==norm(c.name)){S.records.forEach(r=>{if(r.date.slice(0,7)===mk)r.cats.forEach(x=>{if(norm(x.name)===norm(c.o)){x.name=c.name;r.u=Date.now();}});});}});
+  S.budgets[mk]={cats:out.map(c=>({name:c.name,amount:c.amount})),total:r2(out.reduce((s,c)=>s+c.amount,0)),u:Date.now()};
   editB=false;draft=null;persist();renderAll();toast('Presupuesto actualizado ✔');
 }
 function renderMain(){
@@ -601,12 +606,12 @@ function renderReport(){
   $('#recs').innerHTML=r;
   $('#recs').querySelectorAll('[data-del]').forEach(b=>{b.onclick=async()=>{
     if(!(await ask('¿Eliminar este registro? Se restará de los gastos.')))return;
-    S.records=S.records.filter(x=>x.id!==b.dataset.del);persist();renderAll();toast('Registro eliminado');
+    S.del[b.dataset.del]=Date.now();S.records=S.records.filter(x=>x.id!==b.dataset.del);persist();renderAll();toast('Registro eliminado');
   };});
 }
 function renderAll(){
   $('#mes').value=S.selMonth;
-  renderSeal();renderBanner();renderMain();renderReport();
+  renderSeal();renderCloud();renderBanner();renderMain();renderReport();
 }
 function applyTheme(){
   document.documentElement.setAttribute('data-theme',S.theme);
@@ -657,7 +662,14 @@ function importJSON(file){
     try{
       const o=JSON.parse(rd.result);if(!validState(o))throw new Error('formato');
       if(!(await ask('Esto reemplaza TODOS los datos actuales por los del respaldo. ¿Continuar?')))return;
-      S=Object.assign(newState(),o);origin='archivo';applyTheme();persist();renderAll();toast('Respaldo importado ✔');
+      const old=S,now=Date.now(),ns=Object.assign(newState(),o);
+      ns.theme=old.theme;ns.del=Object.assign({},old.del,ns.del||{});ns.bdel=Object.assign({},old.bdel,ns.bdel||{});
+      const ids=new Set(ns.records.map(r=>r.id));
+      old.records.forEach(r=>{if(!ids.has(r.id))ns.del[r.id]=now;});
+      ids.forEach(id=>{delete ns.del[id];});
+      Object.keys(old.budgets).forEach(k=>{if(!ns.budgets[k])ns.bdel[k]=now;});
+      Object.keys(ns.budgets).forEach(k=>{ns.budgets[k].u=Math.max(ns.budgets[k].u||0,now);});
+      S=ns;origin='archivo';applyTheme();persist();renderAll();toast('Respaldo importado ✔');
     }catch(e){toast('Archivo de respaldo inválido');}
   };
   rd.readAsText(file);
@@ -679,9 +691,176 @@ function bind(){
   $('#jsonImpBtn').onclick=()=>$('#jsonImp').click();
   $('#jsonImp').onchange=e=>{if(e.target.files[0])importJSON(e.target.files[0]);e.target.value='';};
   
-  $('#clear').onclick=async()=>{if(await ask('¿Borrar TODOS los presupuestos y registros? Esta acción no se puede deshacer.')){const th=S.theme;S=newState();S.theme=th;persist();PB=null;PD=null;renderBudPrev();renderDayPrev();renderAll();toast('Datos borrados');}};
+  $('#clear').onclick=async()=>{if(await ask('¿Borrar TODOS los presupuestos y registros? Esta acción no se puede deshacer.')){const now=Date.now();S.records.forEach(r=>{S.del[r.id]=now;});Object.keys(S.budgets).forEach(k=>{S.bdel[k]=now;});S.records=[];S.budgets={};persist();PB=null;PD=null;renderBudPrev();renderDayPrev();renderAll();toast('Datos borrados');}};
   $('#save').onclick=saveFile;
   window.addEventListener('beforeunload',e=>{if(S&&isDirty()&&!lsOK){e.preventDefault();e.returnValue='';return '';}});
+}
+
+/* ---------- nube: cuenta y sincronización (Firebase) ---------- */
+const FBCFG={apiKey:"AIzaSyDvR7oD7cU_9ibkOw7n5aMzjJZYIXBsMOs",authDomain:"gstos-app.firebaseapp.com",projectId:"gstos-app",storageBucket:"gstos-app.firebasestorage.app",messagingSenderId:"1046574689800",appId:"1:1046574689800:web:44df39bebe1bd219082bbd"};
+const MAXDEV=3;
+let fbAuth=null,fbDb=null,cUser=null,devOK=false,devList=[],unsub=null,pushT=null,lastSync=0,cloudMsg='',devId='',cloudInit=false;
+const fbReady=()=>!!(window.firebase&&fbAuth&&fbDb);
+function getDevId(){try{let d=localStorage.getItem('ctrlgastos_dev');if(!d){d='d'+Date.now().toString(36)+Math.random().toString(36).slice(2,7);localStorage.setItem('ctrlgastos_dev',d);}return d;}catch(e){return '';}}
+function devName(){const u=navigator.userAgent;const os=/Android/.test(u)?'Android':/iPhone|iPad/.test(u)?'iPhone/iPad':/Windows/.test(u)?'Windows':/Mac/.test(u)?'Mac':'Otro';const br=/Edg\//.test(u)?'Edge':/Firefox/.test(u)?'Firefox':/Chrome/.test(u)?'Chrome':/Safari/.test(u)?'Safari':'Navegador';return os+' · '+br+' · '+devId.slice(-3);}
+function errTxt(e){
+  const c=(e&&e.code)||'';
+  const m={'auth/invalid-email':'Usuario o correo no válido.','auth/user-not-found':'No existe esa cuenta.','auth/wrong-password':'Contraseña incorrecta.','auth/invalid-credential':'Usuario o contraseña incorrectos.','auth/email-already-in-use':'Ese usuario ya existe. Prueba «Iniciar sesión».','auth/weak-password':'La contraseña debe tener al menos 6 caracteres.','auth/network-request-failed':'Sin conexión a internet.','auth/too-many-requests':'Demasiados intentos. Espera un momento.','auth/operation-not-allowed':'Falta activar «Correo/contraseña» en Firebase → Authentication.','auth/unauthorized-domain':'Este sitio no está autorizado en Firebase (Authentication → Configuración → Dominios autorizados).','permission-denied':'Firebase rechazó el acceso: revisa las Reglas de Firestore.','unavailable':'Sin conexión con Firebase.','failed-precondition':'Sin conexión con Firebase.','not-found':'Falta crear la base de datos Firestore.'};
+  return m[c]||('Error: '+(c||(e&&e.message)||e));
+}
+/* --- fusión de datos entre dispositivos (sin perder nada) --- */
+function sortObj(o){const r={};Object.keys(o||{}).sort().forEach(k=>{r[k]=o[k];});return r;}
+function syncPart(st){return {records:(st.records||[]).slice().sort((a,b)=>a.id<b.id?-1:1),budgets:sortObj(st.budgets),del:sortObj(st.del),bdel:sortObj(st.bdel)};}
+const canon=x=>JSON.stringify(x);
+function pick(x,y){const ux=x.u||0,uy=y.u||0;if(ux!==uy)return ux>uy?x:y;return canon(x)>=canon(y)?x:y;}
+function mergeStates(a,b){
+  const del={},bdel={};
+  [a.del,b.del].forEach(d=>Object.keys(d||{}).forEach(k=>{del[k]=Math.max(del[k]||0,d[k]);}));
+  [a.bdel,b.bdel].forEach(d=>Object.keys(d||{}).forEach(k=>{bdel[k]=Math.max(bdel[k]||0,d[k]);}));
+  const rm=new Map();
+  (a.records||[]).concat(b.records||[]).forEach(r=>{const o=rm.get(r.id);rm.set(r.id,o?pick(o,r):r);});
+  const records=Array.from(rm.values()).filter(r=>!(r.id in del));
+  const budgets={},ks=new Set(Object.keys(a.budgets||{}).concat(Object.keys(b.budgets||{})));
+  ks.forEach(k=>{const x=(a.budgets||{})[k],y=(b.budgets||{})[k];const p=(x&&y)?pick(x,y):(x||y);if(bdel[k]&&bdel[k]>=(p.u||0))return;budgets[k]=p;});
+  return syncPart({records,budgets,del,bdel});
+}
+function applyMerged(m){
+  if(canon(m)===canon(syncPart(S)))return false;
+  S.records=m.records;S.budgets=m.budgets;S.del=m.del;S.bdel=m.bdel;S.updatedAt=Date.now();store();renderAll();return true;
+}
+/* --- subir / bajar --- */
+function schedulePush(){if(!cUser||!devOK)return;clearTimeout(pushT);pushT=setTimeout(pushNow,1200);}
+async function pushNow(){
+  if(!cUser||!devOK||!fbReady())return;
+  const ref=fbDb.doc('users/'+cUser.uid+'/data/main');
+  try{
+    let merged=null;
+    await fbDb.runTransaction(async t=>{
+      const snap=await t.get(ref);let remote=null;
+      if(snap.exists){try{remote=JSON.parse(snap.data().json);}catch(e){}}
+      const local=syncPart(S);
+      merged=remote?mergeStates(local,remote):local;
+      if(!remote||canon(syncPart(remote))!==canon(merged))t.set(ref,{json:canon(merged),u:Date.now(),by:devId});
+    });
+    applyMerged(merged);lastSync=Date.now();cloudMsg='';
+  }catch(e){cloudMsg=errTxt(e);}
+  renderCloud();
+}
+function startSync(){
+  stopSync();
+  const ref=fbDb.doc('users/'+cUser.uid+'/data/main');
+  unsub=ref.onSnapshot(snap=>{
+    if(snap.metadata.hasPendingWrites)return;
+    if(!snap.exists){schedulePush();return;}
+    let remote;try{remote=JSON.parse(snap.data().json);}catch(e){return;}
+    const merged=mergeStates(syncPart(S),remote);
+    applyMerged(merged);
+    if(canon(merged)!==canon(syncPart(remote)))schedulePush();
+    lastSync=Date.now();cloudMsg='';renderCloud();
+  },e=>{cloudMsg=errTxt(e);renderCloud();});
+  schedulePush();
+}
+function stopSync(){if(unsub){unsub();unsub=null;}clearTimeout(pushT);}
+/* --- dispositivos (máximo 3) --- */
+async function registerDevice(){
+  const ref=fbDb.doc('users/'+cUser.uid);let res=null;
+  await fbDb.runTransaction(async t=>{
+    const snap=await t.get(ref);const data=snap.exists?snap.data():{};const devs=(data.devices||[]).slice();
+    const i=devs.findIndex(d=>d.id===devId),now=Date.now();
+    if(i>=0){devs[i]=Object.assign({},devs[i],{seen:now});res={ok:true,devs};}
+    else if(devs.length<MAXDEV){devs.push({id:devId,name:devName(),at:now,seen:now});res={ok:true,devs};}
+    else{res={ok:false,devs};return;}
+    t.set(ref,{devices:devs,email:cUser.email||''});
+  });
+  devList=res.devs;devOK=res.ok;return res.ok;
+}
+async function removeDevice(id){
+  const ref=fbDb.doc('users/'+cUser.uid);
+  await fbDb.runTransaction(async t=>{
+    const snap=await t.get(ref);const devs=((snap.exists?snap.data().devices:[])||[]).filter(d=>d.id!==id);
+    t.set(ref,{devices:devs,email:cUser.email||''});devList=devs;
+  });
+}
+async function retryCloud(){
+  if(!cUser||!fbReady())return;
+  try{if(!devOK){const ok=await registerDevice();if(ok&&!unsub)startSync();}else{if(!unsub)startSync();schedulePush();}cloudMsg='';}
+  catch(e){cloudMsg=errTxt(e);}
+  renderCloud();
+}
+function initCloud(){
+  cloudInit=true;
+  if(devId&&window.firebase){
+    try{
+      firebase.initializeApp(FBCFG);fbAuth=firebase.auth();fbDb=firebase.firestore();
+      try{fbDb.settings({experimentalAutoDetectLongPolling:true,merge:true});}catch(e){}
+      fbAuth.onAuthStateChanged(async u=>{
+        cUser=u;devOK=false;stopSync();renderCloud();
+        if(u){try{const ok=await registerDevice();if(ok)startSync();cloudMsg='';}catch(e){cloudMsg=errTxt(e);}}
+        renderCloud();
+      });
+    }catch(e){cloudMsg=errTxt(e);}
+  }
+  window.addEventListener('online',retryCloud);
+  renderCloud();
+}
+/* --- pantallas --- */
+function openDlg(h){const d=$('#dlg');d.innerHTML='<div class="dbox">'+h+'</div>';d.classList.add('on');}
+function closeDlg(){const d=$('#dlg');d.classList.remove('on');d.innerHTML='';}
+function toEmail(u){u=String(u||'').trim();if(u.indexOf('@')>-1)return u.toLowerCase();return norm(u).replace(/[^a-z0-9._-]/g,'')+'@gastos.app';}
+function loginDlg(reg){
+  openDlg('<h4 style="margin-top:0">'+(reg?'Crear cuenta':'Iniciar sesión')+'</h4><label>Usuario o correo</label><input id="lgU" type="text" autocapitalize="none" autocomplete="username"><label>Contraseña (mínimo 6 caracteres)</label><input id="lgP" type="password" autocomplete="'+(reg?'new-password':'current-password')+'">'+(reg?'<label>Repite la contraseña</label><input id="lgP2" type="password" autocomplete="new-password">':'')+'<div id="lgErr" class="badc" style="margin-top:6px"></div><div class="row"><button class="btn" id="lgOk">'+(reg?'Crear cuenta':'Entrar')+'</button><button class="btn sec" id="lgNo">Cancelar</button></div>');
+  $('#lgNo').onclick=closeDlg;
+  $('#lgOk').onclick=async()=>{
+    const u=$('#lgU').value,p=$('#lgP').value,err=$('#lgErr');err.textContent='';
+    if(!u.trim()||!p){err.textContent='Escribe usuario y contraseña.';return;}
+    if(reg&&p!==$('#lgP2').value){err.textContent='Las contraseñas no coinciden.';return;}
+    if(!fbReady()){err.textContent='No hay conexión con Firebase.';return;}
+    $('#lgOk').disabled=true;
+    try{
+      if(reg)await fbAuth.createUserWithEmailAndPassword(toEmail(u),p);else await fbAuth.signInWithEmailAndPassword(toEmail(u),p);
+      closeDlg();toast(reg?'Cuenta creada ✔':'Sesión iniciada ✔');
+    }catch(e){err.textContent=errTxt(e);$('#lgOk').disabled=false;}
+  };
+}
+function devDlg(){
+  let h='<h4 style="margin-top:0">Dispositivos ('+devList.length+'/'+MAXDEV+')</h4>';
+  if(!devOK)h+='<div class="warnc">Llegaste al límite de '+MAXDEV+'. Quita uno para usar este dispositivo.</div>';
+  devList.forEach(d=>{h+='<div class="pit" style="grid-template-columns:1fr auto"><span>'+esc(d.name)+(d.id===devId?'<span class="tag">este</span>':'')+'<br><small>Visto: '+fmtTime(d.seen)+'</small></span><button class="btn sec" data-rm="'+esc(d.id)+'">Quitar</button></div>';});
+  h+='<div class="row"><button class="btn sec" id="dvX">Cerrar</button></div>';
+  openDlg(h);$('#dvX').onclick=closeDlg;
+  document.querySelectorAll('#dlg [data-rm]').forEach(b=>{b.onclick=async()=>{
+    const id=b.dataset.rm;closeDlg();
+    if(!(await ask(id===devId?'¿Quitar ESTE dispositivo? Se cerrará la sesión aquí.':'¿Quitar ese dispositivo? No podrá sincronizar hasta volver a iniciar sesión.')))return;
+    try{
+      await removeDevice(id);
+      if(id===devId){await fbAuth.signOut();}
+      else if(!devOK){const ok=await registerDevice();if(ok)startSync();}
+      cloudMsg='';
+    }catch(e){cloudMsg=errTxt(e);}
+    renderCloud();
+  };});
+}
+function renderCloud(){
+  const box=$('#cloud');if(!box)return;
+  if(!cloudInit){box.innerHTML='';return;}
+  let h='<div class="cloudbox"><b>☁️ Cuenta y sincronización</b>';
+  if(!devId)h+='<div class="mut">Este navegador no permite guardar datos locales, así que no se puede sincronizar.</div>';
+  else if(!fbReady())h+='<div class="mut">Sin conexión con Firebase. La app sigue funcionando en este dispositivo.'+(cloudMsg?' ('+esc(cloudMsg)+')':'')+'</div>';
+  else if(!cUser)h+='<div class="mut">Inicia sesión para usar tus datos en otros dispositivos (máximo '+MAXDEV+').</div><div class="row"><button class="btn" id="cLogin">Iniciar sesión</button><button class="btn sec" id="cReg">Crear cuenta</button></div>';
+  else{
+    const who=(cUser.email||'').replace(/@gastos\.app$/,'');
+    h+='<div>'+esc(who)+'</div>';
+    if(devOK)h+='<div>Dispositivos: <b>'+devList.length+'/'+MAXDEV+'</b> · '+(cloudMsg?'<span class="warnc">⚠ '+esc(cloudMsg)+'</span>':(lastSync?'<span class="okc">✔ sincronizado '+fmtTime(lastSync).slice(-5)+'</span>':'conectando…'))+'</div>';
+    else h+='<div class="badc">'+(devList.length>=MAXDEV?'Límite de '+MAXDEV+' dispositivos alcanzado.':'Sin sincronizar.')+(cloudMsg?' '+esc(cloudMsg):'')+'</div>';
+    h+='<div class="row">'+(devOK?'<button class="btn sec" id="cSync">🔄 Sincronizar</button>':'')+'<button class="btn sec" id="cDev">📱 Dispositivos</button><button class="btn sec" id="cOut">Salir</button></div>';
+  }
+  box.innerHTML=h+'</div>';
+  const g=id=>document.getElementById(id);
+  if(g('cLogin'))g('cLogin').onclick=()=>loginDlg(false);
+  if(g('cReg'))g('cReg').onclick=()=>loginDlg(true);
+  if(g('cSync'))g('cSync').onclick=()=>{retryCloud();pushNow();};
+  if(g('cDev'))g('cDev').onclick=devDlg;
+  if(g('cOut'))g('cOut').onclick=async()=>{if(await ask('¿Cerrar sesión en este dispositivo? Tus datos se quedan guardados aquí.')){try{await fbAuth.signOut();}catch(e){}}};
 }
 
 /* ---------- inicio ---------- */
@@ -692,7 +871,7 @@ function init(){
   if(!/^\d{4}-\d{2}$/.test(S.selMonth||''))S.selMonth=mkey(new Date());
   if(!S.theme)S.theme='dark';
   const now=new Date();$('#d1').value=ymd(now.getFullYear(),now.getMonth(),1);$('#d2').value=dstr(now);
-  applyTheme();bind();store();renderAll();
+  devId=getDevId();applyTheme();bind();store();renderAll();initCloud();
   const b=$('#boot');if(b)b.style.display='none';
 }
 try{init();}catch(e){window.__fatal(e&&e.message?e.message:String(e));}
